@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "koda-workflows"
+version = "0.1.0"
+description = "DAG-based workflow automation engine with branching, conditions, and pause/resume"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Mike Wandzilak", email = "mike@wandzilakwebdesign.com"}]
+dependencies = [
+    "pydantic>=2.0",
+    "fastapi>=0.110"
+]
+
+[project.urls]
+Homepage = "https://github.com/HeyKodaAI/koda-workflows"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
