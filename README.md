@@ -14,11 +14,15 @@ The package is a self-contained Pydantic + SQLite core with an optional FastAPI 
 - **DAG validation before every run** — `validate_dag()` checks for a trigger step, dangling `next_steps` references, missing/invalid condition branch targets, duplicate step ids, and cycles (DFS). A definition that fails validation produces a `FAILED` run with the errors, never a partial execution.
 - **Branching conditions** with nine operators (`equals`, `not_equals`, `contains`, `not_contains`, `greater_than`, `less_than`, `is_empty`, `is_not_empty`, `matches_regex`), evaluated against a dot-notation field path into the run context (`lead.budget`).
 - **Shared run context** — each step's output merges into a context dict that downstream steps read; string parameters support `{{field.path}}` interpolation.
-- **Pause/resume** — a step that reports `waiting_approval` parks the run in `WAITING_APPROVAL`; `engine.resume(run_id)` picks up from the current step's successors, skipping already-executed steps.
+- **Pause/resume** — a step that reports `waiting_approval` parks the run in `WAITING_APPROVAL`; after the host approves and completes the paused action, `engine.resume(run_id)` continues all pending work against the saved definition, skipping completed and inactive steps.
 - **SQLite persistence** (WAL mode) for workflow definitions (versioned, JSON-serialized) and full run history with per-step results, timings, and errors.
 - **FastAPI router** exposing CRUD, validate, execute, duplicate, and run management under `/api/v1/workflows/*`.
 
 Scope note: in this package, `ACTION` steps resolve their parameters and return a structured `simulated_success` result rather than calling external services — the intended integration point is wiring `WorkflowEngine._exec_action` to your own tool registry / permission layer (in Koda, its companion is [koda-permissions](https://github.com/HeyKodaAI/koda-permissions)). `DELAY` steps sleep synchronously, capped at 10 seconds.
+
+## Review fixes (0.1.1)
+
+See [CHANGELOG.md](CHANGELOG.md) for fixes, compatibility changes and upgrade guidance.
 
 ## Install
 
@@ -108,7 +112,7 @@ pip install -e . pytest pytest-asyncio
 pytest
 ```
 
-31 tests covering models/validation, the engine (branching, transforms, interpolation, failure paths), and storage.
+37 tests covering models/validation, the engine (branching, transforms, interpolation, failure paths), and storage.
 
 ## License
 

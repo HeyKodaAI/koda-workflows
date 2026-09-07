@@ -73,6 +73,9 @@ class WorkflowStorage:
             CREATE INDEX IF NOT EXISTS idx_runs_started
                 ON workflow_runs(started_at DESC);
         """)
+        columns = {r[1] for r in self._conn.execute("PRAGMA table_info(workflow_runs)")}
+        if "definition_snapshot" not in columns:
+            self._conn.execute("ALTER TABLE workflow_runs ADD COLUMN definition_snapshot TEXT")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -186,15 +189,16 @@ class WorkflowStorage:
             """
             INSERT INTO workflow_runs (id, workflow_id, workflow_version, status,
                                        step_results, current_step_id, context,
-                                       triggered_by, started_at, completed_at, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       triggered_by, started_at, completed_at, error, definition_snapshot)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 step_results = excluded.step_results,
                 current_step_id = excluded.current_step_id,
                 context = excluded.context,
                 completed_at = excluded.completed_at,
-                error = excluded.error
+                error = excluded.error,
+                definition_snapshot = excluded.definition_snapshot
             """,
             (
                 run.id,
@@ -208,6 +212,7 @@ class WorkflowStorage:
                 run.started_at.isoformat() if run.started_at else None,
                 run.completed_at.isoformat() if run.completed_at else None,
                 run.error,
+                run.definition_snapshot.model_dump_json() if run.definition_snapshot else None,
             ),
         )
         self._conn.commit()
@@ -275,6 +280,8 @@ class WorkflowStorage:
             id=row["id"],
             workflow_id=row["workflow_id"],
             workflow_version=row["workflow_version"],
+            definition_snapshot=(WorkflowDefinition.model_validate_json(row["definition_snapshot"])
+                                 if row["definition_snapshot"] else None),
             status=RunStatus(row["status"]),
             step_results=[StepResult(**sr) for sr in step_results_raw],
             current_step_id=row["current_step_id"],

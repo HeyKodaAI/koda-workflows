@@ -6,7 +6,7 @@ A workflow is a directed acyclic graph (DAG) of steps. Each step has:
 - Connections to downstream steps (edges)
 
 Execution proceeds from trigger → through conditions → to actions,
-respecting the permission system for every action step.
+with the host responsible for action permissions and real execution.
 """
 
 from __future__ import annotations
@@ -228,6 +228,7 @@ class WorkflowRun(BaseModel):
     id: str = Field(default="", description="Run UUID")
     workflow_id: str
     workflow_version: int = 1
+    definition_snapshot: Optional[WorkflowDefinition] = None
     status: RunStatus = RunStatus.PENDING
 
     # Step-by-step results

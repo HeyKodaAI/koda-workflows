@@ -1,7 +1,7 @@
 """Workflow execution engine — walks the DAG and executes steps.
 
-The engine respects the permission system: every action step goes through
-permission checking. If an action requires approval, the run pauses.
+The host supplies permission checking and real action execution. The built-in
+action executor simulates success; custom executors can pause for approval.
 
 Data flows through a shared context dict that steps can read/write.
 """
@@ -78,149 +78,130 @@ class WorkflowEngine:
             workflow_version=workflow.version,
             status=RunStatus.RUNNING,
             context=initial_context or {},
+            definition_snapshot=workflow.model_copy(deep=True),
             triggered_by=triggered_by,
             started_at=datetime.now(timezone.utc),
         )
         self._storage.save_run(run)
 
-        # Start from trigger step
-        trigger = workflow.trigger_step
-        if not trigger:
-            run.status = RunStatus.FAILED
-            run.error = "No trigger step found"
-            run.completed_at = datetime.now(timezone.utc)
-            self._storage.save_run(run)
-            return run
-
-        # Walk the DAG
-        step_map = workflow.step_map
-        queue: list[str] = [trigger.id]
-        visited: set[str] = set()
-
-        while queue:
-            step_id = queue.pop(0)
-            if step_id in visited:
-                continue
-            visited.add(step_id)
-
-            step = step_map.get(step_id)
-            if not step:
-                run.status = RunStatus.FAILED
-                run.error = f"Step '{step_id}' not found in workflow"
-                break
-
-            run.current_step_id = step_id
-            self._storage.save_run(run)
-
-            # Execute the step
-            result = self._execute_step(step, run.context)
-            run.step_results.append(result)
-
-            if result.status == "failed":
-                run.status = RunStatus.FAILED
-                run.error = f"Step '{step_id}' failed: {result.error}"
-                break
-
-            if result.status == "waiting_approval":
-                run.status = RunStatus.WAITING_APPROVAL
-                self._storage.save_run(run)
-                return run
-
-            # Merge step output into context
-            if result.output is not None:
-                if isinstance(result.output, dict):
-                    run.context.update(result.output)
-                else:
-                    run.context[f"step_{step_id}_output"] = result.output
-
-            # Determine next steps
-            if step.type == StepType.CONDITION:
-                branch_result = result.output
-                if isinstance(branch_result, dict):
-                    branch = branch_result.get("branch", "false")
-                else:
-                    branch = "true" if branch_result else "false"
-
-                next_id = step.config.get(f"{branch}_step")
-                if next_id:
-                    queue.append(next_id)
-            else:
-                queue.extend(step.next_steps)
-
-        # Mark complete
-        if run.status == RunStatus.RUNNING:
-            run.status = RunStatus.COMPLETED
-
-        run.completed_at = datetime.now(timezone.utc)
-        run.current_step_id = None
-        self._storage.save_run(run)
-        return run
+        return self._continue(workflow, run)
 
     def resume(self, run_id: str) -> Optional[WorkflowRun]:
-        """Resume a paused workflow run (e.g., after approval)."""
+        """Continue after the host has approved and completed the paused action.
+
+        The host owns authentication, approval and execution of that action.
+        This method does not itself grant permission or repeat its side effects.
+        """
         run = self._storage.get_run(run_id)
         if not run or run.status != RunStatus.WAITING_APPROVAL:
             return None
-
-        workflow = self._storage.get_workflow(run.workflow_id)  # type: ignore
-        if not workflow:
-            return None
-
-        # Find current step and continue from its next steps
-        step_map = workflow.step_map
-        current = step_map.get(run.current_step_id or "")
-        if not current:
+        workflow = run.definition_snapshot
+        if workflow is None:
+            workflow = self._storage.get_workflow(run.workflow_id)
+            if workflow is None or workflow.version != run.workflow_version:
+                run.status = RunStatus.FAILED
+                run.error = "Legacy run definition is missing or changed; cannot safely resume"
+                run.completed_at = datetime.now(timezone.utc)
+                self._storage.save_run(run)
+                return run
+            run.definition_snapshot = workflow.model_copy(deep=True)
+        current = next((r for r in reversed(run.step_results)
+                        if r.step_id == run.current_step_id and r.status == "waiting_approval"), None)
+        if current is None:
             run.status = RunStatus.FAILED
-            run.error = "Cannot find current step to resume from"
+            run.error = "Missing paused step result"
             run.completed_at = datetime.now(timezone.utc)
             self._storage.save_run(run)
             return run
-
+        current.status = "completed"
+        current.completed_at = datetime.now(timezone.utc)
+        self._merge_output(run, current)
         run.status = RunStatus.RUNNING
-        visited = {sr.step_id for sr in run.step_results}
-        queue = list(current.next_steps)
+        return self._continue(workflow, run)
 
-        while queue:
-            step_id = queue.pop(0)
-            if step_id in visited:
-                continue
-            visited.add(step_id)
+    @staticmethod
+    def _successors(step: WorkflowStep, result: StepResult | None = None) -> list[str]:
+        if step.type != StepType.CONDITION:
+            return step.next_steps
+        if result is None:
+            return list(filter(None, [step.config.get("true_step"), step.config.get("false_step")]))
+        output = result.output
+        branch = output.get("branch", "false") if isinstance(output, dict) else ("true" if output else "false")
+        target = step.config.get(f"{branch}_step")
+        return [target] if target else []
 
-            step = step_map.get(step_id)
-            if not step:
-                run.status = RunStatus.FAILED
-                run.error = f"Step '{step_id}' not found"
-                break
+    @staticmethod
+    def _merge_output(run: WorkflowRun, result: StepResult) -> None:
+        if isinstance(result.output, dict):
+            run.context.update(result.output)
+        elif result.output is not None:
+            run.context[f"step_{result.step_id}_output"] = result.output
 
-            run.current_step_id = step_id
-            result = self._execute_step(step, run.context)
-            run.step_results.append(result)
+    def _continue(self, workflow: WorkflowDefinition, run: WorkflowRun) -> WorkflowRun:
+        """Schedule nodes only when all possible incoming branches are resolved.
 
-            if result.status == "failed":
-                run.status = RunStatus.FAILED
-                run.error = f"Step '{step_id}' failed: {result.error}"
-                break
-
-            if result.status == "waiting_approval":
-                run.status = RunStatus.WAITING_APPROVAL
-                self._storage.save_run(run)
-                return run
-
-            if result.output is not None:
-                if isinstance(result.output, dict):
-                    run.context.update(result.output)
-                else:
-                    run.context[f"step_{step_id}_output"] = result.output
-
-            if step.type == StepType.CONDITION:
-                branch_result = result.output
-                branch = "true" if branch_result else "false"
-                next_id = step.config.get(f"{branch}_step")
-                if next_id:
-                    queue.append(next_id)
-            else:
-                queue.extend(step.next_steps)
-
+        The execution frontier is reconstructed from persisted results and the
+        immutable definition. Inactive branches are skipped, including their
+        descendants, without blocking a join reached by an active branch.
+        """
+        step_map = workflow.step_map
+        trigger = workflow.trigger_step
+        if trigger is None:
+            run.status = RunStatus.FAILED
+            run.error = "No trigger step found"
+        else:
+            reachable = set()
+            pending = [trigger.id]
+            while pending:
+                sid = pending.pop()
+                if sid in reachable:
+                    continue
+                reachable.add(sid)
+                pending.extend(self._successors(step_map[sid]))
+            predecessors = {sid: set() for sid in reachable}
+            for sid in reachable:
+                for target in self._successors(step_map[sid]):
+                    predecessors[target].add(sid)
+            completed = {r.step_id: r for r in run.step_results if r.status == "completed"}
+            skipped = set()
+            while reachable - completed.keys() - skipped:
+                progress = False
+                for step in workflow.steps:
+                    sid = step.id
+                    if sid not in reachable or sid in completed or sid in skipped:
+                        continue
+                    parents = predecessors[sid]
+                    if not parents <= completed.keys() | skipped:
+                        continue
+                    active = sid == trigger.id or any(
+                        parent in completed and sid in self._successors(step_map[parent], completed[parent])
+                        for parent in parents
+                    )
+                    progress = True
+                    if not active:
+                        skipped.add(sid)
+                        continue
+                    run.current_step_id = sid
+                    self._storage.save_run(run)
+                    result = self._execute_step(step, run.context)
+                    run.step_results.append(result)
+                    if result.status == "waiting_approval":
+                        run.status = RunStatus.WAITING_APPROVAL
+                        self._storage.save_run(run)
+                        return run
+                    if result.status != "completed":
+                        run.status = RunStatus.FAILED
+                        run.error = f"Step '{sid}' failed: {result.error or result.status}"
+                        break
+                    completed[sid] = result
+                    self._merge_output(run, result)
+                    self._storage.save_run(run)
+                if run.status == RunStatus.FAILED:
+                    break
+                if not progress:
+                    run.status = RunStatus.FAILED
+                    run.error = "Unresolved workflow dependencies"
+                    break
         if run.status == RunStatus.RUNNING:
             run.status = RunStatus.COMPLETED
         run.completed_at = datetime.now(timezone.utc)
