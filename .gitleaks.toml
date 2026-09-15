@@ -1,0 +1,23 @@
+title = "Wandzilak secret scanning - deployable output included"
+[extend]
+path = "/Users/mike/projects/_audit/security-fix-2026-09-15-01a0a5c5/gitleaks-base.toml"
+
+# No directory/filetype exclusions. Generated assets and lockfiles can carry secrets.
+[allowlist]
+description = "Explicit non-secret example values only"
+regexTarget = "secret"
+regexes = [
+  # Official Slack documentation placeholder used by a scanner negative test.
+  '''^https://hooks\.slack\.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX$''',
+  '''^same-as-worker-secret$''',
+  '''^same-as-worker$''',
+  '''^your-pepper$''',
+  '''^AKIAIOSFODNN7EXAMPLE$''',
+  '''^EXAMPLE[_-]?KEY$''',
+]
+
+[[rules]]
+id = "cloudflare-turnstile-secret"
+description = "Cloudflare Turnstile secret key (35 characters; not the public site key)"
+regex = '''\b0x[A-Za-z0-9_-]{33}\b'''
+keywords = ["0x"]
