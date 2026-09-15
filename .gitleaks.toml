@@ -1,6 +1,6 @@
 title = "Wandzilak secret scanning - deployable output included"
 [extend]
-path = "/Users/mike/projects/_audit/security-fix-2026-09-15-01a0a5c5/gitleaks-base.toml"
+path = ".github/security/gitleaks-base.toml"
 
 # No directory/filetype exclusions. Generated assets and lockfiles can carry secrets.
 [allowlist]
