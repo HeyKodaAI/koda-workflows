@@ -2,8 +2,8 @@
   {
     "rule": "python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query",
     "file": "src/koda_workflows/storage.py",
-    "line": 265,
-    "sha256": "5a39a583d060220b7eda47769fb425ea33a01f992ebe8c9ba2268c21a7d6df40",
+    "line": 270,
+    "sha256": "0b998115a6ce02e95add2e1937394f72d3123470f3850011219b1d43a601a25e",
     "reason": "Reviewed SQL composition: predicates are constant SQL and all query values are bound parameters; private schema migration receives only its fixed literal call."
   }
 ]
